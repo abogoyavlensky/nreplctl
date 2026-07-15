@@ -1,0 +1,19 @@
+(ns nreplctl.main
+  (:require [nreplctl.core :as c]
+            [tiny-cli.core :as cli]))
+
+(def app
+  {:name "nreplctl"
+   :version "0.1.0"
+   :doc "An example command-line application."
+   :commands [{:name "greet"
+               :doc "Greet the user."
+               :run c/greet}]})
+
+(defn- main []
+  (cli/run! app *command-line-args*))
+
+; Top-level forms run during AOT compilation too. Guard so `lg -b` doesn't
+; execute the CLI while bundling.
+(when-not *compiling-aot*
+  (main))

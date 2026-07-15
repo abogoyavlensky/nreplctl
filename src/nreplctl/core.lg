@@ -1,0 +1,7 @@
+(ns nreplctl.core)
+
+(defn greet
+  [_ctx]
+  (let [msg "Welcome to the nreplctl app!"]
+    (println msg)
+    msg))

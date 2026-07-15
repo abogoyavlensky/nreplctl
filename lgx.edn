@@ -1,0 +1,18 @@
+{:paths ["src"]
+ :main "main.lg"
+ :targets {:bin {:out "bin/nreplctl"}}
+ :deps {tiny-cli {:git/url "https://github.com/abogoyavlensky/tiny-cli"
+                  :git/tag "v0.2.1"}}
+ :tasks {fmt {:doc "Format source files (available actions: fix, check; default: fix)"
+              :args [{:name :action
+                      :type [:enum "fix" "check"]
+                      :default "fix"}]
+              :do [{:sh "cljfmt {{action}}"}]}
+         
+         lint {:doc "Lint source files"
+               :do [{:sh "find src test -type f -name '*.lg' -print0 | xargs -0 clj-kondo --lint"}]}
+         
+         check {:doc "Run all checks"
+                :do [{:sh "lgx fmt check"}
+                     {:sh "lgx lint"}
+                     {:sh "lgx test"}]}}}                    
