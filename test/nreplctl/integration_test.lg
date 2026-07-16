@@ -12,19 +12,31 @@
   (let [e (os/getenv "LGX_LG")]
     (if (and e (not= "" e)) e "lg")))
 
+(defn- sh-single-quote
+  "POSIX single-quote s for safe embedding in a shell command (handles paths
+   with spaces or shell metacharacters)."
+  [s]
+  (str "'" (str/replace s "'" "'\\''") "'"))
+
 (defn- start-server!
-  "Spawn an lg nREPL server on `port` in its own process group; return the
-   group-leader pid as a string. lg keeps the server alive only while its repl
-   has an open stdin, so we feed it from `tail -f /dev/null`; setsid groups the
-   pipeline so stop-server! can kill it whole."
+  "Spawn an lg nREPL server on `port`. lg's repl keeps the server alive only
+   while its stdin stays open, so we hold it open with `tail` writing into a
+   FIFO wired to lg's stdin — portable (no setsid, which macOS lacks). Returns
+   a teardown handle {:pids [server-pid holder-pid] :dir fifo-dir}."
   [port]
-  (let [cmd (str "setsid sh -c \"tail -f /dev/null | " (lg-binary) " -n -p " port
-                 " >/dev/null 2>&1\" >/dev/null 2>&1 & echo $!")]
-    (str/trim (:out (os/sh "sh" "-c" cmd)))))
+  (let [lg (sh-single-quote (lg-binary))
+        cmd (str "d=$(mktemp -d) || exit 1; f=\"$d/in\"; mkfifo \"$f\" || exit 1; "
+                 "tail -f /dev/null > \"$f\" 2>/dev/null & holder=$!; "
+                 lg " -n -p " port " < \"$f\" > /dev/null 2>&1 & server=$!; "
+                 "echo \"$server $holder $d\"")
+        parts (str/split (str/trim (:out (os/sh "sh" "-c" cmd))) #"\s+")]
+    {:pids [(nth parts 0) (nth parts 1)]
+     :dir (nth parts 2)}))
 
 (defn- stop-server!
-  [pgid]
-  (os/sh "sh" "-c" (str "kill -TERM -" pgid " 2>/dev/null")))
+  "Kill the server and its stdin holder, then remove the FIFO dir."
+  [{:keys [pids dir]}]
+  (os/sh "sh" "-c" (str "kill " (str/join " " pids) " 2>/dev/null; rm -rf " (sh-single-quote dir))))
 
 (defn- wait-connect!
   "Retry connect! (~5s) until the server accepts; return a live conn or nil."
@@ -49,7 +61,7 @@
 (deftest end-to-end-eval
   (let [host "127.0.0.1"
         port (os/free-port)
-        pgid (start-server! port)]
+        server (start-server! port)]
     (try
       (let [conn (wait-connect! host port)]
         (is (some? conn) "server should accept a connection")
@@ -78,4 +90,4 @@
 
             (nrepl/close! conn session))))
       (finally
-        (stop-server! pgid)))))
+        (stop-server! server)))))
