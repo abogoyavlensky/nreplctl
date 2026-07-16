@@ -1,7 +1,70 @@
-(ns nreplctl.core)
+(ns nreplctl.core
+  "Orchestration for the `eval` command: resolve the port, connect, clone,
+   run the eval loop, and map failures to friendly messages + Unix exit codes.
 
-(defn greet
-  [_ctx]
-  (let [msg "Welcome to the nreplctl app!"]
-    (println msg)
-    msg))
+   Exit codes (agent-facing contract):
+     0  eval succeeded
+     1  code threw, or eval timed out
+     2  couldn't resolve the port, connect, or complete the protocol
+
+   All diagnostics go to stderr; stdout carries only evaluated output/values."
+  (:require [nreplctl.nrepl :as nrepl]))
+
+(defn- eprintln
+  [s]
+  (binding [*out* *err*]
+    (println s)))
+
+(defn- emit-event
+  "Default output routing for an eval! event. :out chunks carry their own
+   newlines; each :value prints on its own line; :err goes to stderr."
+  [[kind s]]
+  (case kind
+    :out (print s)
+    :err (binding [*out* *err*] (print s))
+    :value (println s)))
+
+(defn- attempt
+  "Run f; return [:ok result] or [:err ex-message]."
+  [f]
+  (try [:ok (f)] (catch e [:err (ex-message e)])))
+
+(defn eval-cmd
+  "Run one `eval` invocation and return a Unix exit code (0/1/2). Kept free of
+   process exit so it is unit-testable; eval-cmd! adds the os/exit."
+  [{:keys [args opts]}]
+  (let [code (:code args)
+        host (:host opts)
+        port-file (:port-file opts)
+        timeout-s (:timeout opts)
+        timeout-ms (when timeout-s (* 1000 (parse-long timeout-s)))
+        [pk pval] (attempt #(nrepl/resolve-port {:port (:port opts)
+                                                 :port-file port-file}))]
+    (if (= pk :err)
+      (do (eprintln pval) 2)
+      (let [port pval
+            [ck conn] (attempt #(nrepl/connect! host port))]
+        (if (= ck :err)
+          (do (eprintln (str "Could not connect to nREPL at " host ":" port
+                             " — is the server still running?"))
+              2)
+          ;; connected: clone/eval, always close the socket in the finally
+          (let [[sk sval] (attempt #(nrepl/clone! conn host port))]
+            (if (= sk :err)
+              (do (nrepl/close! conn nil) (eprintln sval) 2)
+              (try
+                (let [[ek result] (attempt #(nrepl/eval! conn sval code
+                                                         {:timeout-ms timeout-ms
+                                                          :emit emit-event}))]
+                  (cond
+                    (= ek :err) (do (eprintln result) 2)
+                    (:timeout? result) (do (eprintln (str "Eval timed out after " timeout-s "s")) 1)
+                    (:error? result) 1
+                    :else 0))
+                (finally
+                  (nrepl/close! conn sval))))))))))
+
+(defn eval-cmd!
+  "Process-edge wrapper: run eval-cmd and exit with its code."
+  [ctx]
+  (os/exit (eval-cmd ctx)))

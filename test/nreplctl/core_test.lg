@@ -1,6 +1,0 @@
-(ns nreplctl.core-test
-  (:require [clojure.test :refer [deftest is]]
-            [nreplctl.core :as c]))
-
-(deftest test-greet-ok
-  (is (= "Welcome to the nreplctl app!" (c/greet {}))))

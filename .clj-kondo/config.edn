@@ -10,6 +10,9 @@
  {;; let-go's `catch` takes no class: (catch e body). clj-kondo reads it as
   ;; Clojure's (catch Class binding body) and misparses the block, so scope the
   ;; affected linters off in the namespaces that use it.
+  nreplctl.core {:linters {:unresolved-symbol {:level :off}
+                           :unused-binding {:level :off}
+                           :syntax {:level :off}}}
   nreplctl.nrepl {:linters {:unresolved-symbol {:level :off}
                             :unused-binding {:level :off}
                             :syntax {:level :off}}}

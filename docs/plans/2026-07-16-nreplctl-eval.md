@@ -120,22 +120,28 @@ Work in `/Users/andrew/Projects/let-go` on branch `tcp-client`.
 - Create: `pkg/rt/net.go`
 - Test: `pkg/rt/net_test.go`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
   In `net_test.go`: start a `net.Listener` on `127.0.0.1:0`; from lg code (follow the eval-helper conventions used by existing `pkg/rt` tests, e.g. `http_test.go`) call `net/dial` with the listener's host/port, `net/write!` a string and a byte-array (with a >127 byte, verbatim on the wire), assert the server side received both; have the server write bytes back, assert `net/read!` returns them as a byte-array and returns nil after the server closes; `net/close!` succeeds. Also: `net/dial` to a closed port returns an error mentioning `net/dial`.
 
-- [ ] **Step 2: Run test to verify it fails**
+  > Deviation: a `package rt` test can't import `pkg/compiler` (`Eval`/`evalStr` live there → import cycle), and `http_test.go` doesn't eval lg anyway. Used the established rt-namespace test convention instead — `NS("net").Lookup(vm.Symbol(...)).(*vm.Var).Deref().(vm.Fn)` + `Invoke` (as in `async_test.go`/`urlparam_test.go`). Same intent, accurate helper.
+
+- [x] **Step 2: Run test to verify it fails**
   Run: `go test ./pkg/rt -run TestNet -count=1`
   Expected: FAIL (unresolved `net/dial`)
 
-- [ ] **Step 3: Implement `pkg/rt/net.go`**
+- [x] **Step 3: Implement `pkg/rt/net.go`**
   Follow `unix_linux.go` structurally: `RegisterInstaller` in `init`, `vm.NativeFnType.Wrap` fns, Boxed conn. No build tag — plain TCP is portable. The Boxed value is a small struct holding the `net.Conn` plus a lazily-created `*bencode.Decoder` (used in Task 2). `dial` uses `net.DialTimeout("tcp", addr, 3*time.Second)`; accept port as Int, host as String.
 
-- [ ] **Step 4: Run test to verify it passes**
+  > Deviation: the `netConn.dec *bencode.Decoder` field is added in Task 2 (when `bencode.go` first uses it), not here — the repo's golangci-lint pre-commit gate rejects an unused field/import. Also warmed `vm.NewBoxed`'s type cache for `*netConn` at install time (per codex, below).
+
+- [x] **Step 4: Run test to verify it passes**
   Run: `go test ./pkg/rt -run TestNet -count=1`
   Expected: PASS
 
-- [ ] **Step 5: Commit** (in let-go)
+- [x] **Step 5: Commit** (in let-go)
   `git commit -m "rt: add net namespace - minimal TCP client primitives"`
+
+  > Codex review (commit `f108d8c`) → fixup `6503106`: (P2) `net/read!` now rejects non-positive `max-bytes` as a normal arg error instead of a `makeslice` panic; (P1) pre-warm the boxed-type cache for `*netConn` at single-threaded install so concurrent first dials don't race on the shared, unsynchronized `vm.BoxedTypes` map. Note: that map race is VM-wide (every Boxed type hits it) — the broader fix belongs in `pkg/vm`, out of scope here. Verified with `go test ./pkg/rt -run TestNet -race`.
 
 ### Task 2: `bencode` namespace in let-go
 
@@ -143,42 +149,52 @@ Work in `/Users/andrew/Projects/let-go` on branch `tcp-client`.
 - Modify: `pkg/rt/net.go` (or a sibling `bencode.go` if it reads better)
 - Test: `pkg/rt/net_test.go`
 
-- [ ] **Step 1: Write the failing test**
+> Deviation: implemented as a sibling `pkg/rt/bencode.go` (reads better; net.go stays TCP-only) and added the `dec *bencode.Decoder` field back to `netConn` here. Test uses the same `nsFn` Lookup+Invoke convention as Task 1, with a shared `dialPair` helper.
+
+- [x] **Step 1: Write the failing test**
   Tests over a real TCP pair: `bencode/write!` an nREPL-shaped map `{"op" "eval" "code" "(+ 1 1)"}` from lg, decode on the Go side and assert the dict; encode a response dict with nested list (`"status" ["done"]`) on the Go side, assert `bencode/read!` yields `{"status" ["done"] ...}` as an lg map with String keys and a vector value. Conversion cases: keyword keys become name strings, Int round-trips, nil/bool/float values error on write. Timeout case: `(bencode/read! conn 100)` against a silent server errors with a message containing `timeout`, and the conn still works for a subsequent read (deadline cleared).
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
   Run: `go test ./pkg/rt -run TestBencode -count=1`
   Expected: FAIL
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
   `bencode/write!`: convert lg value → Go (`map[string]any`/`[]any`/`string`/`int64`) per the conversion table, `bencode.EncodeBytes`, write to conn. `bencode/read!`: reuse the conn's persistent `*bencode.Decoder` (create on first use), decode into `any`, convert → lg values per the table. Optional second arg (Int, ms): `SetReadDeadline(now+ms)` before the decode, reset to zero after; map `net.Error.Timeout()` to an error whose message contains `timeout`. Clean EOF → nil.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
   Run: `go test ./pkg/rt -run 'TestNet|TestBencode' -count=1`
   Expected: PASS
 
-- [ ] **Step 5: Full rt test suite**
+- [x] **Step 5: Full rt test suite**
   Run: `go test ./pkg/rt -count=1`
   Expected: PASS (no regressions)
 
-- [ ] **Step 6: Commit** (in let-go)
-  `git commit -m "rt: add bencode namespace - message framing over net conns"`
+- [x] **Step 6: Commit** (in let-go)
+  `git commit -m "rt: add bencode namespace - message framing over net conns"`  → commit `2aa0efa` (also verified `-race`).
+
+  > Codex review (commit `2aa0efa`) → fixup `0c224d0`: (P1) serialize `bencode/read!` per conn with a `readMu` — the persistent `*bencode.Decoder` is stateful (unlike sibling `unix`'s stateless `recv`), so concurrent reads raced; writes stay unlocked so a blocked read can't stall a writer. Verified `-race`.
+  > Accepted-limitation findings (documented, not fixed — all handled correctly by nreplctl's design): (P2) a read timeout mid-frame desyncs the stream — inherent to zeebo's blocking `Decode` + `SetReadDeadline`; a resumable parser is out of scope, and nreplctl abandons the conn after any eval timeout. (P3) a truncated-frame close returns nil like a clean EOF — nreplctl treats any nil-before-`done` as "connection closed before eval completed" (exit 2), so the distinction isn't needed and adding it would force a new error branch in Tasks 5/6.
 
 ### Task 3: Build local lg and smoke-test end to end
 
 **Files:** none (build artifact only)
 
-- [ ] **Step 1: Build**
+- [x] **Step 1: Build**
   Run in `/Users/andrew/Projects/let-go`: `go build -o lg .`
-  Expected: `/Users/andrew/Projects/let-go/lg` exists; `./lg -v` prints a version.
+  Expected: `/Users/andrew/Projects/let-go/lg` exists; `./lg -v` prints a version.  → built, `lg 1.11.2-...-0c224d0`.
 
-- [ ] **Step 2: Smoke-test against lg's own nREPL server**
+- [x] **Step 2: Smoke-test against lg's own nREPL server**
   Start `./lg -n -p 17423 -e '(sleep 60000)' &` (or similar keep-alive), then:
   `./lg -e '(let [c (net/dial "127.0.0.1" 17423)] (bencode/write! c {"op" "clone" "id" "1"}) (println (bencode/read! c 5000)) (net/close! c))'`
-  Expected: a printed map containing `"new-session"`. Kill the server after.
+  Expected: a printed map containing `"new-session"`. Kill the server after.  → PASS: `{"id" "1" "status" ["done"] "new-session" "ffa0f087-..."}`.
+
+  > Deviation (server keep-alive): the plan's `lg -n -p PORT -e '(sleep 60000)'` does **not** start an nREPL server on this lg — in `lg.go` the nREPL+repl block is gated on `if !ranSomething || runREPL`, and `-e` sets `ranSomething=true`, so the server block is skipped entirely. What keeps `lg -n` alive is `repl()` blocking on **stdin**. Correct incantation: **`tail -f /dev/null | ./lg -n -p PORT`** (holds stdin open so the repl blocks and the server keeps serving). This correction also applies to Task 6 Step 3 and Task 7's server spawn.
+  > Aside: transient `144` exit codes seen during bring-up were `pkill -f 'lg …'` matching its own parent shell — avoid self-matching pkill patterns; use fresh ports / tracked PIDs.
 
 - [ ] **Step 3: Push the branch** (needed by Task 8's CI step)
   `git push -u origin tcp-client`
+
+  > BLOCKED (needs the user): no SSH key in this environment, and the available `gh` PAT lacks the `workflow` scope, so pushing `tcp-client` is refused because the branch's pre-existing commits touch `.github/workflows/`. `origin` (the user's fork `abogoyavlensky/let-go`) has no `tcp-client` branch yet. **Action for the user:** push it manually — `git -C /Users/andrew/Projects/let-go push -u origin tcp-client` — before Task 8's CI can build the patched lg. Does not block Tasks 4–7 (all nreplctl, verified locally).
 
 ### Task 4: `resolve-port` and `msg-effects` in nreplctl
 
@@ -188,30 +204,36 @@ All nreplctl commands from here on run with the local lg: prefix with `LGX_LG=/U
 - Create: `src/nreplctl/nrepl.lg`
 - Test: `test/nreplctl/nrepl_test.lg`
 
-- [ ] **Step 1: Write the failing tests**
+> Deviations: (1) lg's `clojure.test` has no `thrown?` — exception cases assert on `ex-message` via a `try/catch` helper (`caught-msg`). (2) Fixed a test-authoring bug: a real nREPL eval-error status is terminal (`["eval-error" "done"]`) so `:done?` is `true` — the implementation was correct. (3) Pulled forward the `.clj-kondo/config.edn` from Task 8 Step 2, since lg's classless `(catch e …)` and the `os` runtime namespace appear here — config mirrors the user's tiny-tui project (`:config-in-ns` scopes `:unresolved-symbol`/`:unused-binding`/`:syntax` off for catch-using namespaces; `:unresolved-namespace` excludes `os`/`net`/`bencode`). (4) First nreplctl commit, so branched `feat/nreplctl-eval` off `master` before committing.
+
+- [x] **Step 1: Write the failing tests**
   `resolve-port`: takes `{:port <str-or-nil> :port-file <path>}` → int, or throws `ex-info` whose message is the friendly text from the design (distinguish: no file+no port / unreadable port value / bad `--port` value). Cases: explicit `:port` wins over an existing file; port file with `"2137\n"` (write via `spit` to a file under `os/temp-dir`) parses; missing file + no port throws the "No .nrepl-port file found" message.
   `msg-effects`: pure fn, nREPL message map → `{:events [[:out s] | [:err s] | [:value s] ...] :done? bool :error? bool}`. Cases: out-only msg; err msg; value msg; `{"status" ["done"]}` → done; `{"status" ["eval-error"] ...}` → error; msg with `"ex"` → error; combined value+done msg.
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
   Run: `LGX_LG=/Users/andrew/Projects/let-go/lg lgx test`
   Expected: FAIL (namespace `nreplctl.nrepl` missing)
 
-- [ ] **Step 3: Implement both fns in `nrepl.lg`**
+- [x] **Step 3: Implement both fns in `nrepl.lg`**
   Pure logic only in `msg-effects`; `resolve-port` does `slurp` + `trim` + `parse-long`. Keep the friendly messages as the ex-info messages so `core.lg` just prints them.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
   Run: `LGX_LG=/Users/andrew/Projects/let-go/lg lgx test`
-  Expected: PASS
+  Expected: PASS  → 14 tests, 15 assertions, 0 failures; full `lgx check` (fmt+lint+test) green.
 
-- [ ] **Step 5: Commit**
-  `git commit -m "feat: add port resolution and nREPL message handling"`
+- [x] **Step 5: Commit**
+  `git commit -m "feat: add port resolution and nREPL message handling"`  → commit `c1f2b3f`.
+
+  > Codex review (commit `c1f2b3f`) → fixup `1ddfcd3`: (P2) `resolve-port` now uses `file-exists?` to distinguish an absent port file (→ "no file" / server-not-running message) from one that exists but can't be read (directory/permissions → "Could not read …", preserving the error) from bad content; (P2) the missing-file test `delete-file`s any leftover path first (hermetic), plus a new `resolve-port-present-but-unreadable` test; (P3) `.gitignore` now ignores `.clj-kondo/.cache/` that `lgx lint` creates. Full `lgx check` green (15 tests).
 
 ### Task 5: nREPL client fns
 
 **Files:**
 - Modify: `src/nreplctl/nrepl.lg`
 
-- [ ] **Step 1: Implement `connect!`, `clone!`, `eval!`, `close!`**
+> Deviations: (1) `clone!` is `(clone! conn host port)`, not `(clone! conn)` — it needs host:port to format the "No nREPL response from HOST:PORT…" message the plan assigns to its ex-info. (2) `eval!` maps *any* abnormal read before done — a nil/EOF **or** a non-timeout read error — to the same "Connection closed by nREPL server…" ex-info (unifies abnormal termination → exit 2); only a read whose error contains "timeout" yields `{:timeout? true}`.
+
+- [x] **Step 1: Implement `connect!`, `clone!`, `eval!`, `close!`**
   Thin IO over the Task 1/2 primitives (integration-tested in Task 7, no unit tests):
   - `(connect! host port)` → conn; let `net/dial` errors propagate (core maps them).
   - `(clone! conn)` → session id string; reads with the fixed 5000ms timeout until `done`. Timeout, nil (EOF), or a response without `new-session` → throw `ex-info` with the "No nREPL response from HOST:PORT…" message.
@@ -219,12 +241,14 @@ All nreplctl commands from here on run with the local lg: prefix with `LGX_LG=/U
   - `(close! conn session)` → nil. Sends the `close` op, best-effort reads its response with a short (1000ms) timeout swallowing errors, then `net/close!`. Called once by `eval-cmd` in its finally.
   - Message ids: fixed `"1"`/`"2"`/`"3"` strings are fine for a one-shot client.
 
-- [ ] **Step 2: Verify it loads**
+- [x] **Step 2: Verify it loads**
   Run: `LGX_LG=/Users/andrew/Projects/let-go/lg lgx test`
-  Expected: PASS (existing tests still green, namespace compiles)
+  Expected: PASS (existing tests still green, namespace compiles)  → PASS. Also smoke-tested end-to-end against a live `lg -n` server (not committed): `(+ 1 1)`→`[:value 2]`; `(undefined-fn-xyz)`→`:error? true`; `(+ 2 3)`→`[:value 5]` on the *same* session (clean reuse after an error); `:timeout-ms 200` over `(sleep 5000)`→`:timeout? true`; `close!` clean.
 
-- [ ] **Step 3: Commit**
-  `git commit -m "feat: add nREPL client - connect, clone, eval loop"`
+- [x] **Step 3: Commit**
+  `git commit -m "feat: add nREPL client - connect, clone, eval loop"`  → commit `caf2086`.
+
+  > Codex review (commit `caf2086`): one P1 — `.mise.toml` pins lg 1.11.1 (no `net`/`bencode`), so a plain `lgx test`/CI checkout can't compile `nrepl.lg`. This is **the plan's intended phased design, not a defect**: Phase 2 develops against the local patched lg via `LGX_LG`, and Task 8 Step 1 adds the temporary CI step that builds lg from the `tcp-client` fork branch (then bumps `.mise.toml` once a release ships). No code change here; resolution lands in Task 8 (which also needs the branch pushed — see Task 3 Step 3).
 
 ### Task 6: CLI wiring — `eval` command
 

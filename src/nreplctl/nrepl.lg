@@ -133,14 +133,16 @@
               (recur errored?))))))))
 
 (defn close!
-  "Send a close op for the session, best-effort drain its response (short
-   timeout, errors swallowed), then close the socket. Called once, in the
-   eval-cmd finally, outside eval! so a session can serve several evals."
+  "Best-effort close a session and the socket. With a session, send a close op
+   and drain its response (short timeout, errors swallowed); a nil session
+   (e.g. clone failed) just closes the socket. Called once in eval-cmd's
+   finally, outside eval! so a session can serve several evals."
   [conn session]
-  (try
-    (bencode/write! conn {"op" "close"
-                          "session" session
-                          "id" "3"})
-    (bencode/read! conn close-timeout-ms)
-    (catch e nil))
+  (when session
+    (try
+      (bencode/write! conn {"op" "close"
+                            "session" session
+                            "id" "3"})
+      (bencode/read! conn close-timeout-ms)
+      (catch e nil)))
   (net/close! conn))
