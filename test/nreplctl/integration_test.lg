@@ -71,9 +71,9 @@
             (is (= 1 (eval-cmd {:args {:code "(undefined-fn-xyz)"}
                                 :opts opts}))
                 "a thrown form -> exit 1")
-            ;; 2: no resolvable port (no --port, absent port file)
-            (let [absent (str (os/temp-dir) "/nreplctl-cli-test-absent-xyz")]
-              (try (delete-file absent) (catch e nil))
+            ;; 2: no resolvable port (no --port, absent port file). A per-run
+            ;; path nothing creates -> guaranteed absent, no destructive delete.
+            (let [absent (str (os/temp-dir) "/nreplctl-cli-test-absent-" (os/free-port))]
               (is (= 2 (eval-cmd {:args {:code "(+ 1 1)"}
                                   :opts {:port nil
                                          :port-file absent
