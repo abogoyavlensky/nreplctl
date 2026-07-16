@@ -29,11 +29,19 @@
                                      :port-file p})))))
 
 (deftest resolve-port-missing-file
-  (let [p (str (os/temp-dir) "/nreplctl-test-absent-xyz")
-        msg (caught-msg #(nrepl/resolve-port {:port nil
-                                              :port-file p}))]
-    (is (str/includes? msg "No "))
-    (is (str/includes? msg "is an nREPL server running here?"))))
+  (let [p (str (os/temp-dir) "/nreplctl-test-absent-xyz")]
+    ;; hermetic: ensure the path is absent regardless of prior runs
+    (try (delete-file p) (catch e nil))
+    (let [msg (caught-msg #(nrepl/resolve-port {:port nil
+                                                :port-file p}))]
+      (is (str/includes? msg "No "))
+      (is (str/includes? msg "is an nREPL server running here?")))))
+
+(deftest resolve-port-present-but-unreadable
+  ;; a path that exists but can't be read as a file (a directory) is not "missing"
+  (let [msg (caught-msg #(nrepl/resolve-port {:port nil
+                                              :port-file (os/temp-dir)}))]
+    (is (str/includes? msg "Could not read"))))
 
 (deftest resolve-port-bad-port-value
   (let [msg (caught-msg #(nrepl/resolve-port {:port "notaport"

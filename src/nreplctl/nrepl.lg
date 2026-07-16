@@ -17,16 +17,19 @@
         p
         (throw (ex-info (str "Invalid --port value: " port " (expected a positive integer)")
                         {:kind :bad-port}))))
-    ;; else read the port file
-    (let [content (try (slurp port-file) (catch e nil))]
-      (if (nil? content)
-        (throw (ex-info (str "No " port-file " file found and no --port given — is an nREPL server running here?")
-                        {:kind :no-port}))
-        (let [p (parse-long (str/trim content))]
-          (if (and p (pos? p))
-            p
-            (throw (ex-info (str "Could not read a port number from " port-file)
-                            {:kind :bad-port-file}))))))))
+    ;; else resolve from the port file. Distinguish absent (no server running)
+    ;; from present-but-unreadable (directory, permissions) from bad content.
+    (if-not (file-exists? port-file)
+      (throw (ex-info (str "No " port-file " file found and no --port given — is an nREPL server running here?")
+                      {:kind :no-port}))
+      (let [content (try (slurp port-file)
+                         (catch e (throw (ex-info (str "Could not read " port-file ": " (ex-message e))
+                                                  {:kind :unreadable-file}))))
+            p (parse-long (str/trim content))]
+        (if (and p (pos? p))
+          p
+          (throw (ex-info (str "Could not read a port number from " port-file)
+                          {:kind :bad-port-file})))))))
 
 ;; ---- pure message handling ---------------------------------------------
 
