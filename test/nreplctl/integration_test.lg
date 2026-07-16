@@ -1,28 +1,29 @@
 (ns nreplctl.integration-test
-  "End-to-end test against a real lg nREPL server spawned as a subprocess:
-   clone once, then several evals over the same session (proving clean stream
-   reuse), plus the timeout path. The server is torn down in a finally."
+  "CLI-level integration: assert eval-cmd's exit codes (0/1/2) against a live
+   nREPL server. eval-cmd returns the code as an int (eval-cmd! adds os/exit),
+   so this needs no stdout capture. The server-spawn helpers are copied from
+   nrepl-client's integration test (they are generic)."
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest is]]
-            [nreplctl.nrepl :as nrepl]))
+            [nrepl-client.core :as nrepl]
+            [nreplctl.core :as cli]))
+
+;; The alias is `cli`, not `core`: a require alias named `core` collides with
+;; the auto-referred clojure.core and won't resolve at compile time (let-go bug,
+;; reported upstream). Any other alias works, so `cli/eval-cmd` compiles fine.
+
+;; ---- server spawn helpers (generic; see nrepl-client integration test) ----
 
 (defn- lg-binary
-  "The lg under test: LGX_LG if set (the patched build), else PATH `lg`."
   []
   (let [e (os/getenv "LGX_LG")]
     (if (and e (not= "" e)) e "lg")))
 
 (defn- sh-single-quote
-  "POSIX single-quote s for safe embedding in a shell command (handles paths
-   with spaces or shell metacharacters)."
   [s]
   (str "'" (str/replace s "'" "'\\''") "'"))
 
 (defn- start-server!
-  "Spawn an lg nREPL server on `port`. lg's repl keeps the server alive only
-   while its stdin stays open, so we hold it open with `tail` writing into a
-   FIFO wired to lg's stdin — portable (no setsid, which macOS lacks). Returns
-   a teardown handle {:pids [server-pid holder-pid] :dir fifo-dir}."
   [port]
   (let [lg (sh-single-quote (lg-binary))
         cmd (str "d=$(mktemp -d) || exit 1; f=\"$d/in\"; mkfifo \"$f\" || exit 1; "
@@ -34,12 +35,10 @@
      :dir (nth parts 2)}))
 
 (defn- stop-server!
-  "Kill the server and its stdin holder, then remove the FIFO dir."
   [{:keys [pids dir]}]
   (os/sh "sh" "-c" (str "kill " (str/join " " pids) " 2>/dev/null; rm -rf " (sh-single-quote dir))))
 
 (defn- wait-connect!
-  "Retry connect! (~5s) until the server accepts; return a live conn or nil."
   [host port]
   (loop [i 0]
     (let [conn (try (nrepl/connect! host port) (catch e nil))]
@@ -48,17 +47,7 @@
         (< i 50) (do (sleep 100) (recur (inc i)))
         :else nil))))
 
-(defn- collect-eval
-  "Run one eval!, collecting emitted events into a vector; return
-   {:events [...] :result {...}}."
-  [conn session code opts]
-  (let [events (atom [])
-        result (nrepl/eval! conn session code
-                            (assoc opts :emit (fn [ev] (swap! events conj ev))))]
-    {:events @events
-     :result result}))
-
-(deftest end-to-end-eval
+(deftest eval-cmd-exit-codes
   (let [host "127.0.0.1"
         port (os/free-port)
         server (start-server! port)]
@@ -66,28 +55,26 @@
       (let [conn (wait-connect! host port)]
         (is (some? conn) "server should accept a connection")
         (when conn
-          (let [session (nrepl/clone! conn host port)]
-            (is (some? session) "clone returns a session id")
-
-            ;; 1) a value comes back, no error
-            (let [{:keys [events result]} (collect-eval conn session "(+ 1 1)" {})]
-              (is (contains? (set events) [:value "2"]) "events contain [:value \"2\"]")
-              (is (not (:error? result)) "(+ 1 1) is not an error"))
-
-            ;; 2) a thrown form is reported as an error
-            (let [{:keys [result]} (collect-eval conn session "(undefined-fn-xyz)" {})]
-              (is (:error? result) "(undefined-fn-xyz) is an error"))
-
-            ;; 3) same session still works after the error — clean stream reuse
-            (let [{:keys [events result]} (collect-eval conn session "(+ 2 3)" {})]
-              (is (contains? (set events) [:value "5"]) "session reuse stays clean")
-              (is (not (:error? result)) "(+ 2 3) is not an error"))
-
-            ;; 4) timeout — run last; the late reply may still arrive on the wire
-            (let [{:keys [result]} (collect-eval conn session "(do (sleep 5000) 42)"
-                                                 {:timeout-ms 100})]
-              (is (:timeout? result) "a slow eval under a short timeout times out"))
-
-            (nrepl/close! conn session))))
+          ;; close the readiness probe so the test leaves no open socket
+          (nrepl/close! conn nil)
+          (let [opts {:port (str port)
+                      :port-file ".nrepl-port"
+                      :host host}]
+            ;; 0: a value comes back
+            (is (= 0 (cli/eval-cmd {:args {:code "(+ 1 1)"}
+                                    :opts opts}))
+                "(+ 1 1) succeeds -> exit 0")
+            ;; 1: the code throws
+            (is (= 1 (cli/eval-cmd {:args {:code "(undefined-fn-xyz)"}
+                                    :opts opts}))
+                "a thrown form -> exit 1")
+            ;; 2: no resolvable port (no --port, absent port file). A per-run
+            ;; path nothing creates -> guaranteed absent, no destructive delete.
+            (let [absent (str (os/temp-dir) "/nreplctl-cli-test-absent-" (os/free-port))]
+              (is (= 2 (cli/eval-cmd {:args {:code "(+ 1 1)"}
+                                      :opts {:port nil
+                                             :port-file absent
+                                             :host host}}))
+                  "no port file and no --port -> exit 2")))))
       (finally
         (stop-server! server)))))
