@@ -1,0 +1,83 @@
+(ns nreplctl.integration-test
+  "CLI-level integration: assert eval-cmd's exit codes (0/1/2) against a live
+   nREPL server. eval-cmd returns the code as an int (eval-cmd! adds os/exit),
+   so this needs no stdout capture. The server-spawn helpers are copied from
+   nrepl-client's integration test (they are generic)."
+  (:require [clojure.string :as str]
+            [clojure.test :refer [deftest is]]
+            [nrepl-client.core :as nrepl]
+            [nreplctl.core]))
+
+;; nreplctl.core is loaded via the require above; resolve eval-cmd at runtime.
+;; A direct (nreplctl.core/eval-cmd ...) call does not compile — let-go cannot
+;; resolve a var from a transitively-required namespace at compile time
+;; (nreplctl.core itself requires nrepl-client.core; a leaf namespace resolves
+;; fine). The var is fine at runtime. (Worth reporting upstream to let-go.)
+(def ^:private eval-cmd @(resolve 'nreplctl.core/eval-cmd))
+
+;; ---- server spawn helpers (generic; see nrepl-client integration test) ----
+
+(defn- lg-binary
+  []
+  (let [e (os/getenv "LGX_LG")]
+    (if (and e (not= "" e)) e "lg")))
+
+(defn- sh-single-quote
+  [s]
+  (str "'" (str/replace s "'" "'\\''") "'"))
+
+(defn- start-server!
+  [port]
+  (let [lg (sh-single-quote (lg-binary))
+        cmd (str "d=$(mktemp -d) || exit 1; f=\"$d/in\"; mkfifo \"$f\" || exit 1; "
+                 "tail -f /dev/null > \"$f\" 2>/dev/null & holder=$!; "
+                 lg " -n -p " port " < \"$f\" > /dev/null 2>&1 & server=$!; "
+                 "echo \"$server $holder $d\"")
+        parts (str/split (str/trim (:out (os/sh "sh" "-c" cmd))) #"\s+")]
+    {:pids [(nth parts 0) (nth parts 1)]
+     :dir (nth parts 2)}))
+
+(defn- stop-server!
+  [{:keys [pids dir]}]
+  (os/sh "sh" "-c" (str "kill " (str/join " " pids) " 2>/dev/null; rm -rf " (sh-single-quote dir))))
+
+(defn- wait-connect!
+  [host port]
+  (loop [i 0]
+    (let [conn (try (nrepl/connect! host port) (catch e nil))]
+      (cond
+        conn conn
+        (< i 50) (do (sleep 100) (recur (inc i)))
+        :else nil))))
+
+(deftest eval-cmd-exit-codes
+  (let [host "127.0.0.1"
+        port (os/free-port)
+        server (start-server! port)]
+    (try
+      (let [conn (wait-connect! host port)]
+        (is (some? conn) "server should accept a connection")
+        (when conn
+          ;; close the readiness probe so the test leaves no open socket
+          (nrepl/close! conn nil)
+          (let [opts {:port (str port)
+                      :port-file ".nrepl-port"
+                      :host host}]
+            ;; 0: a value comes back
+            (is (= 0 (eval-cmd {:args {:code "(+ 1 1)"}
+                                :opts opts}))
+                "(+ 1 1) succeeds -> exit 0")
+            ;; 1: the code throws
+            (is (= 1 (eval-cmd {:args {:code "(undefined-fn-xyz)"}
+                                :opts opts}))
+                "a thrown form -> exit 1")
+            ;; 2: no resolvable port (no --port, absent port file)
+            (let [absent (str (os/temp-dir) "/nreplctl-cli-test-absent-xyz")]
+              (try (delete-file absent) (catch e nil))
+              (is (= 2 (eval-cmd {:args {:code "(+ 1 1)"}
+                                  :opts {:port nil
+                                         :port-file absent
+                                         :host host}}))
+                  "no port file and no --port -> exit 2")))))
+      (finally
+        (stop-server! server)))))

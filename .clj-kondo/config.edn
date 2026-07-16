@@ -13,4 +13,7 @@
   ;; affected linters off in the namespaces that use it.
   nreplctl.core {:linters {:unresolved-symbol {:level :off}
                            :unused-binding {:level :off}
-                           :syntax {:level :off}}}}}
+                           :syntax {:level :off}}}
+  nreplctl.integration-test {:linters {:unresolved-symbol {:level :off}
+                                       :unused-binding {:level :off}
+                                       :syntax {:level :off}}}}}
