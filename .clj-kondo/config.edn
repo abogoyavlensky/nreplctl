@@ -18,4 +18,7 @@
                             :syntax {:level :off}}}
   nreplctl.nrepl-test {:linters {:unresolved-symbol {:level :off}
                                  :unused-binding {:level :off}
-                                 :syntax {:level :off}}}}}
+                                 :syntax {:level :off}}}
+  nreplctl.integration-test {:linters {:unresolved-symbol {:level :off}
+                                       :unused-binding {:level :off}
+                                       :syntax {:level :off}}}}}
