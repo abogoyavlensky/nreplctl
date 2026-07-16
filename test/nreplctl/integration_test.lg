@@ -6,14 +6,11 @@
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest is]]
             [nrepl-client.core :as nrepl]
-            [nreplctl.core]))
+            [nreplctl.core :as cli]))
 
-;; nreplctl.core is loaded via the require above; resolve eval-cmd at runtime.
-;; A direct (nreplctl.core/eval-cmd ...) call does not compile — let-go cannot
-;; resolve a var from a transitively-required namespace at compile time
-;; (nreplctl.core itself requires nrepl-client.core; a leaf namespace resolves
-;; fine). The var is fine at runtime. (Worth reporting upstream to let-go.)
-(def ^:private eval-cmd @(resolve 'nreplctl.core/eval-cmd))
+;; The alias is `cli`, not `core`: a require alias named `core` collides with
+;; the auto-referred clojure.core and won't resolve at compile time (let-go bug,
+;; reported upstream). Any other alias works, so `cli/eval-cmd` compiles fine.
 
 ;; ---- server spawn helpers (generic; see nrepl-client integration test) ----
 
@@ -64,20 +61,20 @@
                       :port-file ".nrepl-port"
                       :host host}]
             ;; 0: a value comes back
-            (is (= 0 (eval-cmd {:args {:code "(+ 1 1)"}
-                                :opts opts}))
+            (is (= 0 (cli/eval-cmd {:args {:code "(+ 1 1)"}
+                                    :opts opts}))
                 "(+ 1 1) succeeds -> exit 0")
             ;; 1: the code throws
-            (is (= 1 (eval-cmd {:args {:code "(undefined-fn-xyz)"}
-                                :opts opts}))
+            (is (= 1 (cli/eval-cmd {:args {:code "(undefined-fn-xyz)"}
+                                    :opts opts}))
                 "a thrown form -> exit 1")
             ;; 2: no resolvable port (no --port, absent port file). A per-run
             ;; path nothing creates -> guaranteed absent, no destructive delete.
             (let [absent (str (os/temp-dir) "/nreplctl-cli-test-absent-" (os/free-port))]
-              (is (= 2 (eval-cmd {:args {:code "(+ 1 1)"}
-                                  :opts {:port nil
-                                         :port-file absent
-                                         :host host}}))
+              (is (= 2 (cli/eval-cmd {:args {:code "(+ 1 1)"}
+                                      :opts {:port nil
+                                             :port-file absent
+                                             :host host}}))
                   "no port file and no --port -> exit 2")))))
       (finally
         (stop-server! server)))))
