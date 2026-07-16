@@ -1,5 +1,7 @@
 # nreplctl eval Implementation Plan
 
+> **✅ COMPLETED 2026-07-16** — all 8 tasks implemented, reviewed (codex per task), and verified. One open action for the user: **push the `tcp-client` let-go branch** (see the completion summary and Task 3 Step 3). Full summary at the bottom.
+
 > **For agentic workers:** Use executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** A let-go CLI tool that sends Clojure code to a running nREPL server and prints the results, with friendly failures — plus the minimal TCP/bencode primitives it needs added to let-go upstream.
@@ -256,50 +258,58 @@ All nreplctl commands from here on run with the local lg: prefix with `LGX_LG=/U
 - Modify: `src/nreplctl/core.lg`, `main.lg`
 - Delete: `test/nreplctl/core_test.lg`
 
-- [ ] **Step 1: Implement `eval-cmd` in `core.lg`**
+> Deviations: (1) `close!` made nil-session-tolerant (close op behind `(when session …)`) so `eval-cmd`'s finally can always call `(close! conn session)` — including when `clone!` failed (session nil, just closes the socket). (2) Added `nreplctl.core` to `.clj-kondo/config.edn` `:config-in-ns` (it uses lg's classless `catch` via the `attempt` helper). (3) Server-start uses the corrected `tail -f /dev/null | lg -n -p PORT` keep-alive (see Task 3). (4) Case-2 output is `"a, b, c"` only, not `nil`-then-value: lg's nREPL server sends only the final form's value (not per-form values). The client faithfully prints every `value` message it receives — this is server behavior, exactly the cross-impl difference Task 7 Step 3 anticipates.
+
+- [x] **Step 1: Implement `eval-cmd` in `core.lg`**
   Replace `greet`. `(eval-cmd ctx)` → exit code int (testable); a thin `(eval-cmd! ctx)` wrapper calls `(os/exit ...)` with it. Flow: resolve port (ex-info → print message to stderr, 2) → connect (net/dial error → the "Could not connect…" message with host:port, 2) → clone (ex-info → its message to stderr, 2) → eval with the default emit (`[:out s]` → `(print s)`, `[:err s]` → print to stderr via `binding [*out* *err*]`, `[:value s]` → `(println s)`); an EOF ex-info from `eval!` → its message to stderr, 2 → `close!` in a finally → 1 if `:error?` or `:timeout?` (print the timeout message with the configured seconds), else 0.
 
-- [ ] **Step 2: Wire the tiny-cli spec in `main.lg`**
+- [x] **Step 2: Wire the tiny-cli spec in `main.lg`**
   Command `eval`, doc string, one required positional `:code`. Command opts (`:value? true` each except none are flags): `:port` (`-p`/`--port`), `:port-file` (`--port-file`, `:default ".nrepl-port"`), `:host` (`--host`, `:default "127.0.0.1"`), `:timeout` (`-t`/`--timeout`, seconds). Validate `:port` and `:timeout` as positive integers via `:validate`. App `:doc`: one line about evaluating code in a running nREPL server. Remove the `greet` command and its test file.
 
-- [ ] **Step 3: Manual verification against the local lg server**
-  Start: `/Users/andrew/Projects/let-go/lg -n -p 17423 -e '(sleep 60000)' &`
-  - `LGX_LG=/Users/andrew/Projects/let-go/lg lgx run -- eval --port 17423 '(+ 1 1)'` → prints `2`, exit 0
-  - `... eval --port 17423 '(require (quote [string :as s]))(s/join ", " ["a" "b" "c"])'` → prints `nil` then `"a, b, c"`
-  - `... eval --port 17423 '(println "hi")'` → prints `hi` then `nil`
-  - `... eval --port 17423 '(undefined-fn)'` → error text on stderr, exit 1 (`echo $?`)
-  - `... eval --port 1 '(+ 1 1)'` → "Could not connect…" on stderr, exit 2
-  - no server file case: run in a dir without `.nrepl-port`, no `--port` → friendly message, exit 2
-  - `echo 17423 > .nrepl-port` then `... eval '(+ 1 1)'` → `2` (file discovery works)
-  Kill the server after.
+- [x] **Step 3: Manual verification against the local lg server** — all cases pass (server via `tail -f /dev/null | lg -n -p 17470`):
+  - `eval --port … '(+ 1 1)'` → `2`, exit 0 ✓
+  - `require`+`str/join` → `"a, b, c"`, exit 0 ✓ (lg server sends only the last value — see deviation 4)
+  - `'(println "hi")'` → `hi` then `nil`, exit 0 ✓
+  - `'(undefined-fn)'` → error on stderr, exit 1 ✓
+  - `--port 1` → "Could not connect to nREPL at 127.0.0.1:1 — is the server still running?", exit 2 ✓
+  - no `.nrepl-port`, no `--port` → "No .nrepl-port file found and no --port given — is an nREPL server running here?", exit 2 ✓
+  - `.nrepl-port` with the port then bare `eval '(+ 1 1)'` → `2`, exit 0 (discovery) ✓
+  - Bonus: `--timeout 1` over `(sleep 5000)` → "Eval timed out after 1s", exit 1 ✓; `--port notaport`/`--timeout abc` → validation errors, exit 2 ✓.
 
-- [ ] **Step 4: Commit**
-  `git commit -m "feat: wire eval command with port discovery and exit codes"`
+- [x] **Step 4: Commit**
+  `git commit -m "feat: wire eval command with port discovery and exit codes"`  → commit `5928d21`.
+
+  > Codex review (commit `5928d21`): no actionable defects — CLI wiring, exit-code mapping, cleanup paths, and output routing behave as intended.
 
 ### Task 7: Integration test
 
 **Files:**
 - Create: `test/nreplctl/integration_test.lg`
 
-- [ ] **Step 1: Write the test**
+> Deviation (server spawn): same root cause as Task 3 — `lg -n -p PORT -e '(sleep 60000)'` never starts a server. The test spawns `setsid sh -c "tail -f /dev/null | <lg> -n -p PORT …" & echo $!`, captures the **process-group** leader pid, and tears down with `kill -TERM -<pgid>` (kills lg *and* the `tail` keep-alive — verified 0 orphans). Also added a `collect-eval` helper.
+
+- [x] **Step 1: Write the test**
   Helpers: lg binary = `(os/getenv "LGX_LG")` or `"lg"`; port = `(os/free-port)`; spawn via `(os/sh "sh" "-c" "<lg> -n -p <port> -e '(sleep 60000)' >/dev/null 2>&1 & echo $!")` capturing the pid; retry `connect!` in a loop (`(sleep 100)`, ~50 attempts) until the server answers. In the test body: clone once, then over the same session — `eval!` of `(+ 1 1)` with a collecting `:emit` (atom conj), assert events contain `[:value "2"]` and `:error?` false; eval of `(undefined-fn-xyz)` → `:error?` true; a third eval of `(+ 2 3)` → `[:value "5"]` (proves session/stream reuse stays clean); eval with `:timeout-ms 100` of `(sleep 5000)` → `:timeout? true` (run this last — the late reply may still arrive on the wire). Finish with `close!`. Kill the server pid in a `finally` (`(os/sh "kill" pid)`).
 
-- [ ] **Step 2: Run the full suite**
+- [x] **Step 2: Run the full suite**
   Run: `LGX_LG=/Users/andrew/Projects/let-go/lg lgx test`
-  Expected: PASS
+  Expected: PASS  → 15 tests, 23 assertions, 0 failures; server torn down with 0 orphans.
 
-- [ ] **Step 3: Manual cross-impl check (babashka)**
+- [x] **Step 3: Manual cross-impl check (babashka)**
   `bb nrepl-server 17424 &`, then `LGX_LG=... lgx run -- eval --port 17424 '(require (quote [clojure.string :as str]))(str/join ", " ["a" "b" "c"])'` → `nil` and `"a, b, c"`. Kill it after. If bb behaves differently (e.g. per-form value messages), confirm output still reads correctly — that's the point of the check.
+  > Ran via `mise x babashka@latest -- bb nrepl-server 17480` (the `bb` shim had no version pinned). PASS: babashka prints **`nil` then `"a, b, c"`** — it sends **per-form** value messages, unlike lg's server (only the last value). The client is REPL-faithful to both, confirming it isn't lg-specific and the "emit every value" design works. `(println …)(+ 10 20)` → `from-bb`, `nil`, `30`.
 
-- [ ] **Step 4: Commit**
-  `git commit -m "test: add end-to-end integration test against live nREPL server"`
+- [x] **Step 4: Commit**
+  `git commit -m "test: add end-to-end integration test against live nREPL server"`  → commit `441a9d2`.
+
+  > Codex review (commit `441a9d2`) → fixup `996306c`: two P2 portability fixes. (1) `setsid` isn't installed on macOS by default (and this repo is developed on macOS), so the process-group launcher would fail the whole suite locally — replaced with a portable FIFO keep-alive (`tail` writes into a FIFO wired to lg's stdin; no setsid) that captures the server and holder pids explicitly for a clean two-pid teardown. (2) Single-quote the `LGX_LG` path so paths with spaces/metacharacters work. Constructs used (`mkfifo`, `mktemp -d`, `tail`, `kill`) are POSIX/macOS-portable; verified repeated runs pass with 0 orphans.
 
 ### Task 8: CI, lint, docs
 
 **Files:**
 - Modify: `.github/workflows/checks.yml`, `README.md`
 
-- [ ] **Step 1: Temporary CI step for the patched lg**
+- [x] **Step 1: Temporary CI step for the patched lg**
   mise installs lg 1.11.1 (no `net`/`bencode`), so CI must build lg from the fork branch until a release ships. In `checks.yml`, before "Run all checks":
 
   ```yaml
@@ -315,16 +325,46 @@ All nreplctl commands from here on run with the local lg: prefix with `LGX_LG=/U
   ```
   and set `LGX_LG: /tmp/let-go/lg` as `env` on the "Run all checks" step.
 
-- [ ] **Step 2: Full local check**
+- [x] **Step 2: Full local check**
   Run: `LGX_LG=/Users/andrew/Projects/let-go/lg lgx check`
-  Expected: fmt, lint, tests all PASS. If clj-kondo flags the `net`/`bencode` namespaces as unresolved, add them to a `.clj-kondo/config.edn` exclude rather than sprinkling ignores.
+  Expected: fmt, lint, tests all PASS.  → PASS (15 tests). clj-kondo config for `net`/`bencode`/`os` + lg `catch` was set up in Task 4 and extended per namespace.
 
-- [ ] **Step 3: Update README**
+- [x] **Step 3: Update README**
   Replace the template text: what nreplctl is, `eval` usage with the flag table, port discovery order, exit codes (the agent-facing table from the design), the require example, and a development note about `LGX_LG` while the let-go release is pending.
 
-- [ ] **Step 4: Commit**
-  `git commit -m "ci: build patched lg until let-go release; document usage"`
+- [x] **Step 4: Commit**
+  `git commit -m "ci: build patched lg until let-go release; document usage"`  → commit `d7ed182`.
+
+  > Codex review (commit `d7ed182`) → fixup `0c36669`: (P2) moved the patched-lg/`LGX_LG` prerequisite ahead of the build+run instructions so a clean checkout doesn't hit unresolved `net`/`bencode`; (P2) the `(println "hi")` example now shows both `hi` and `nil` (the value), per the every-value contract. (P1) CI clone of `tcp-client` fails until the branch is pushed — this is the **known blocker from Task 3 Step 3** (workflow-scope PAT unavailable here); the workflow config is correct once the user pushes. No code change.
 
 ### Follow-up (outside this plan)
 
 - PR the `tcp-client` branch to `nooga/let-go`; once a release ships, bump `lg` in `.mise.toml`, drop the CI build step and `LGX_LG` notes.
+
+---
+
+## Completion summary (2026-07-16)
+
+**What was built**
+
+- **let-go** (`/Users/andrew/Projects/let-go`, branch `tcp-client`, 4 commits `f108d8c..0c224d0`): two portable generic namespaces in Go — `net` (TCP client: `dial`/`write!`/`read!`/`close!`, 3s connect timeout, byte-array-aware I/O) and `bencode` (`write!`/`read!` with the pinned two-way conversion table, a persistent per-conn `bencode.Decoder`, and an optional read-timeout arg). Go tests in `pkg/rt/net_test.go` cover dial/read/write, bencode round-trips, conversion edge cases, and timeout recovery; full `pkg/rt` suite and `-race` are green.
+- **nreplctl** (branch `feat/nreplctl-eval`, 8 commits `c1f2b3f..0c36669`): the `eval` command in pure `.lg` — `resolve-port` (port/`--port-file` discovery with classified friendly errors), pure `msg-effects`, the `connect!`/`clone!`/`eval!`/`close!` nREPL client (streaming emit, session reuse, timeout, EOF handling), `eval-cmd`/`eval-cmd!` orchestration mapping failures to the 0/1/2 exit-code contract, the tiny-cli spec, unit tests, a self-contained end-to-end integration test, `.clj-kondo/config.edn`, the temporary CI build step, and a rewritten README.
+- **Verified**: unit + integration (`lgx check`, 15 tests / 23 assertions), end-to-end against lg's own nREPL server *and* babashka (cross-impl), and the built `bin/nreplctl` binary driven through success/error/timeout/connect-fail/no-port scenarios.
+
+**Open action for the user (blocker for green CI)**
+
+- **Push the let-go branch:** `git -C /Users/andrew/Projects/let-go push -u origin tcp-client`. It could not be pushed from this environment — no SSH key, and the available `gh` PAT lacks the `workflow` scope (the branch's pre-existing commits touch `.github/workflows/`). Task 8's CI step and the README clone instructions both depend on `abogoyavlensky/let-go@tcp-client` existing on the remote; until it's pushed, `checks.yml` fails at the clone.
+
+**Issues encountered**
+
+- **Server keep-alive (plan was stale):** `lg -n -p PORT -e '(sleep 60000)'` does *not* start a server on this lg — `-e` sets `ranSomething`, which skips the `nREPL + repl` block in `lg.go`. The repl blocking on **stdin** is what keeps `lg -n` alive, so the working incantation holds stdin open: `tail -f /dev/null | lg -n -p PORT` (a FIFO variant in the integration test). Applied in Tasks 3, 5, 6, 7.
+- **Sandbox red herrings:** transient `144` exits during bring-up were `pkill -f 'lg …'` matching its own parent shell, not a network sandbox; cross-invocation loopback networking works.
+
+**Deviations** (full detail in each task's `> Deviation`/`> Codex review` notes): rt tests use the `NS(...).Lookup().Invoke()` convention (a `package rt` test can't import `pkg/compiler`); the `netConn.dec` field lands in Task 2 (lint gate) and gained a `readMu` (codex P1); `resolve-port` classifies absent vs. unreadable port files; `clone!` is `(clone! conn host port)` (needs host:port for its message); `close!` tolerates a nil session; a project `.clj-kondo/config.edn` scopes linters per-namespace for lg's classless `(catch e …)` and excludes the `os`/`net`/`bencode` runtime namespaces; the integration launcher is a portable FIFO + two-pid teardown (no macOS-absent `setsid`); nreplctl commits live on `feat/nreplctl-eval` (branched off `master`). Accepted-as-designed: bencode P2 (timeout mid-frame) / P3 (truncated-EOF) — handled by the one-shot client's abandon-on-close behavior.
+
+**What the plan could have specified better**
+
+- The **server keep-alive command** was wrong for the installed lg and the *entire* test strategy depends on it — the plan should have pinned/verified the `lg -n` start command against the real binary.
+- The **clj-kondo guidance** anticipated only `net`/`bencode` unresolved-namespace noise, but lg's classless `catch` also needs per-namespace `:config-in-ns` linter scoping — every `catch`/`try`-using namespace needs an entry; worth stating up front.
+- `clone!`'s specced signature `(clone! conn)` can't build its `HOST:PORT` message — the plan should have given it host/port.
+- The **branch-push prerequisite** for CI is a hard external dependency and should have been called out as a gating step, not folded into Task 3's push.
