@@ -2,9 +2,10 @@
 ;; entries teach clj-kondo the project's deliberate conventions and let-go's
 ;; runtime namespaces. None of them silence real bugs.
 {:linters
- {;; os/net/bencode are let-go runtime namespaces provided by the interpreter
-  ;; (no require exists); clj-kondo can't see them.
-  :unresolved-namespace {:exclude [os net bencode]}}
+ {;; os is a let-go runtime namespace provided by the interpreter (no require
+  ;; exists); clj-kondo can't see it. (net/bencode now live in the
+  ;; nrepl-client library, not in nreplctl's own source.)
+  :unresolved-namespace {:exclude [os]}}
 
  :config-in-ns
  {;; let-go's `catch` takes no class: (catch e body). clj-kondo reads it as
@@ -12,13 +13,4 @@
   ;; affected linters off in the namespaces that use it.
   nreplctl.core {:linters {:unresolved-symbol {:level :off}
                            :unused-binding {:level :off}
-                           :syntax {:level :off}}}
-  nreplctl.nrepl {:linters {:unresolved-symbol {:level :off}
-                            :unused-binding {:level :off}
-                            :syntax {:level :off}}}
-  nreplctl.nrepl-test {:linters {:unresolved-symbol {:level :off}
-                                 :unused-binding {:level :off}
-                                 :syntax {:level :off}}}
-  nreplctl.integration-test {:linters {:unresolved-symbol {:level :off}
-                                       :unused-binding {:level :off}
-                                       :syntax {:level :off}}}}}
+                           :syntax {:level :off}}}}}

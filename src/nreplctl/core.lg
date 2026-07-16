@@ -8,7 +8,7 @@
      2  couldn't resolve the port, connect, or complete the protocol
 
    All diagnostics go to stderr; stdout carries only evaluated output/values."
-  (:require [nreplctl.nrepl :as nrepl]))
+  (:require [nrepl-client.core :as nrepl]))
 
 (defn- eprintln
   [s]

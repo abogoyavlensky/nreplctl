@@ -3,7 +3,8 @@
  :resource-paths ["resources"]
  :targets {:bin {:out "bin/nreplctl"}}
  :deps {tiny-cli {:git/url "https://github.com/abogoyavlensky/tiny-cli"
-                  :git/tag "v0.2.3"}}
+                  :git/tag "v0.2.3"}
+        nrepl-client {:local/root "../nrepl-client"}}
  :tasks {fmt {:doc "Format source files (available actions: fix, check; default: fix)"
               :args [{:name :action
                       :type [:enum "fix" "check"]
