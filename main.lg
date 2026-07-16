@@ -2,13 +2,46 @@
   (:require [nreplctl.core :as c]
             [tiny-cli.core :as cli]))
 
+(defn- positive-int-str?
+  "True when s parses to a positive integer. Options arrive as strings
+   (tiny-cli validates without coercing)."
+  [s]
+  (boolean (when-let [n (parse-long s)]
+             (pos? n))))
+
 (def app
   {:name "nreplctl"
    :version "0.1.0"
-   :doc "An example command-line application."
-   :commands [{:name "greet"
-               :doc "Greet the user."
-               :run c/greet}]})
+   :doc "Evaluate Clojure code in a running nREPL server and print the results."
+   :commands [{:name "eval"
+               :doc "Evaluate code in a running nREPL server and print the results."
+               :args [{:key :code
+                       :doc "Clojure code to evaluate (a single positional)."}]
+               :opts [{:key :port
+                       :short "p"
+                       :long "port"
+                       :value? true
+                       :doc "nREPL port. Overrides --port-file."
+                       :validate {:pred positive-int-str?
+                                  :msg "--port must be a positive integer."}}
+                      {:key :port-file
+                       :long "port-file"
+                       :value? true
+                       :default ".nrepl-port"
+                       :doc "File to read the port from (default: .nrepl-port)."}
+                      {:key :host
+                       :long "host"
+                       :value? true
+                       :default "127.0.0.1"
+                       :doc "nREPL host (default: 127.0.0.1)."}
+                      {:key :timeout
+                       :short "t"
+                       :long "timeout"
+                       :value? true
+                       :doc "Per-read eval timeout in seconds (off by default)."
+                       :validate {:pred positive-int-str?
+                                  :msg "--timeout must be a positive integer."}}]
+               :run c/eval-cmd!}]})
 
 (defn- main []
   (cli/run! app *command-line-args*))

@@ -1,0 +1,148 @@
+(ns nreplctl.nrepl
+  "nREPL client over the let-go net/bencode primitives: port resolution, the
+   pure message->effects mapping, and the connect/clone/eval/close IO."
+  (:require [clojure.string :as str]))
+
+;; ---- port resolution ---------------------------------------------------
+
+(defn resolve-port
+  "Resolve the nREPL port from {:port <str-or-nil> :port-file <path>}.
+   An explicit :port wins; otherwise the :port-file is read. Returns an int,
+   or throws ex-info carrying a friendly (agent-facing) message."
+  [{:keys [port port-file]}]
+  (if (some? port)
+    ;; explicit --port wins over any file
+    (let [p (parse-long (str/trim (str port)))]
+      (if (and p (pos? p))
+        p
+        (throw (ex-info (str "Invalid --port value: " port " (expected a positive integer)")
+                        {:kind :bad-port}))))
+    ;; else resolve from the port file. Distinguish absent (no server running)
+    ;; from present-but-unreadable (directory, permissions) from bad content.
+    (if-not (file-exists? port-file)
+      (throw (ex-info (str "No " port-file " file found and no --port given — is an nREPL server running here?")
+                      {:kind :no-port}))
+      (let [content (try (slurp port-file)
+                         (catch e (throw (ex-info (str "Could not read " port-file ": " (ex-message e))
+                                                  {:kind :unreadable-file}))))
+            p (parse-long (str/trim content))]
+        (if (and p (pos? p))
+          p
+          (throw (ex-info (str "Could not read a port number from " port-file)
+                          {:kind :bad-port-file})))))))
+
+;; ---- pure message handling ---------------------------------------------
+
+(defn msg-effects
+  "Pure: an nREPL message map (String keys) -> a description of what it means:
+   {:events [[:out s] | [:err s] | [:value s] ...]  ; streamed output, in order
+    :done?  bool                                     ; status contains \"done\"
+    :error? bool}                                    ; eval-error status, or an \"ex\" key
+   Every value is emitted (REPL-faithful), each event tagged by channel."
+  [msg]
+  (let [status (set (get msg "status"))
+        events (cond-> []
+                 (get msg "out") (conj [:out (get msg "out")])
+                 (get msg "err") (conj [:err (get msg "err")])
+                 (get msg "value") (conj [:value (get msg "value")]))]
+    {:events events
+     :done? (contains? status "done")
+     :error? (or (contains? status "eval-error")
+                 (some? (get msg "ex")))}))
+
+;; ---- nREPL client IO ---------------------------------------------------
+;;
+;; Thin IO over the let-go net/bencode primitives. Message ids are fixed
+;; ("1" clone, "2" eval, "3" close) — fine for a one-shot client.
+
+(def ^:private clone-timeout-ms
+  "Fixed read timeout for the clone handshake, so a non-nREPL listener can't
+   hang the tool."
+  5000)
+
+(def ^:private close-timeout-ms
+  "Best-effort read timeout when draining the close response."
+  1000)
+
+(defn connect!
+  "Open a TCP connection to an nREPL server. net/dial errors propagate; the
+   caller (eval-cmd) maps them to the friendly connect message."
+  [host port]
+  (net/dial host port))
+
+(defn- no-nrepl!
+  [host port]
+  (throw (ex-info (str "No nREPL response from " host ":" port " — is that a real nREPL server?")
+                  {:kind :no-nrepl})))
+
+(defn clone!
+  "Send a clone op and read (with a fixed timeout) until done; return the
+   new-session id string. A timeout, EOF, or a done response without a
+   new-session means the peer isn't a real nREPL server -> ex-info."
+  [conn host port]
+  (bencode/write! conn {"op" "clone"
+                        "id" "1"})
+  (loop [session nil]
+    ;; timeout throws (message contains "timeout"); clean EOF returns nil.
+    (let [msg (try (bencode/read! conn clone-timeout-ms) (catch e :timeout))]
+      (if (or (= msg :timeout) (nil? msg))
+        (no-nrepl! host port)
+        (let [session (or session (get msg "new-session"))]
+          (if (:done? (msg-effects msg))
+            (or session (no-nrepl! host port))
+            (recur session)))))))
+
+(defn eval!
+  "Evaluate code in session; stream events to :emit as they arrive (never
+   batched), stopping on done. Returns {:error? bool :timeout? bool}. Does NOT
+   send close — one session may serve several evals, so leaving the stream
+   clean matters. A read timeout -> {:timeout? true}; any other abnormal read
+   (EOF or IO error) before done -> ex-info (connection closed)."
+  [conn session code {:keys [timeout-ms emit]}]
+  (bencode/write! conn {"op" "eval"
+                        "code" code
+                        "session" session
+                        "id" "2"})
+  (loop [errored? false]
+    (let [outcome (try
+                    {:msg (if timeout-ms
+                            (bencode/read! conn timeout-ms)
+                            (bencode/read! conn))}
+                    (catch e
+                           (if (str/includes? (str (ex-message e)) "timeout")
+                             {:timeout? true}
+                             (throw (ex-info "Connection closed by nREPL server before eval completed"
+                                             {:kind :eof})))))]
+      (cond
+        (:timeout? outcome)
+        {:error? errored?
+         :timeout? true}
+
+        (nil? (:msg outcome))
+        (throw (ex-info "Connection closed by nREPL server before eval completed"
+                        {:kind :eof}))
+
+        :else
+        (let [eff (msg-effects (:msg outcome))]
+          (doseq [ev (:events eff)]
+            (emit ev))
+          (let [errored? (or errored? (:error? eff))]
+            (if (:done? eff)
+              {:error? errored?
+               :timeout? false}
+              (recur errored?))))))))
+
+(defn close!
+  "Best-effort close a session and the socket. With a session, send a close op
+   and drain its response (short timeout, errors swallowed); a nil session
+   (e.g. clone failed) just closes the socket. Called once in eval-cmd's
+   finally, outside eval! so a session can serve several evals."
+  [conn session]
+  (when session
+    (try
+      (bencode/write! conn {"op" "close"
+                            "session" session
+                            "id" "3"})
+      (bencode/read! conn close-timeout-ms)
+      (catch e nil)))
+  (net/close! conn))
