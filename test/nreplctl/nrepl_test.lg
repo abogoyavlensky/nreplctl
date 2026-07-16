@@ -1,0 +1,99 @@
+(ns nreplctl.nrepl-test
+  (:require [clojure.string :as str]
+            [clojure.test :refer [deftest is]]
+            [nreplctl.nrepl :as nrepl]))
+
+(defn- caught-msg
+  "Run f; return the ex-message it throws, or nil if it doesn't throw."
+  [f]
+  (try (f) nil (catch e (ex-message e))))
+
+(defn- temp-port-file
+  "Write contents to a uniquely-named temp file and return its path."
+  [name contents]
+  (let [p (str (os/temp-dir) "/nreplctl-test-" name)]
+    (spit p contents)
+    p))
+
+;; ---- resolve-port ------------------------------------------------------
+
+(deftest resolve-port-explicit-wins
+  ;; an explicit :port wins even when a port file exists with a different value
+  (let [p (temp-port-file "explicit" "9999\n")]
+    (is (= 2137 (nrepl/resolve-port {:port "2137"
+                                     :port-file p})))))
+
+(deftest resolve-port-from-file
+  (let [p (temp-port-file "fromfile" "2137\n")]
+    (is (= 2137 (nrepl/resolve-port {:port nil
+                                     :port-file p})))))
+
+(deftest resolve-port-missing-file
+  (let [p (str (os/temp-dir) "/nreplctl-test-absent-xyz")
+        msg (caught-msg #(nrepl/resolve-port {:port nil
+                                              :port-file p}))]
+    (is (str/includes? msg "No "))
+    (is (str/includes? msg "is an nREPL server running here?"))))
+
+(deftest resolve-port-bad-port-value
+  (let [msg (caught-msg #(nrepl/resolve-port {:port "notaport"
+                                              :port-file ".nrepl-port"}))]
+    (is (str/includes? msg "Invalid --port"))))
+
+(deftest resolve-port-nonpositive-port-value
+  (let [msg (caught-msg #(nrepl/resolve-port {:port "0"
+                                              :port-file ".nrepl-port"}))]
+    (is (str/includes? msg "Invalid --port"))))
+
+(deftest resolve-port-unreadable-file-content
+  (let [p (temp-port-file "garbage" "not-a-number\n")
+        msg (caught-msg #(nrepl/resolve-port {:port nil
+                                              :port-file p}))]
+    (is (str/includes? msg "Could not read a port number"))))
+
+;; ---- msg-effects (pure) ------------------------------------------------
+
+(deftest msg-effects-out-only
+  (is (= {:events [[:out "hello"]]
+          :done? false
+          :error? false}
+         (nrepl/msg-effects {"out" "hello"}))))
+
+(deftest msg-effects-err
+  (is (= {:events [[:err "boom"]]
+          :done? false
+          :error? false}
+         (nrepl/msg-effects {"err" "boom"}))))
+
+(deftest msg-effects-value
+  (is (= {:events [[:value "42"]]
+          :done? false
+          :error? false}
+         (nrepl/msg-effects {"value" "42"}))))
+
+(deftest msg-effects-done
+  (is (= {:events []
+          :done? true
+          :error? false}
+         (nrepl/msg-effects {"status" ["done"]}))))
+
+(deftest msg-effects-eval-error
+  ;; a real nREPL eval-error is terminal: status carries both "eval-error" and "done"
+  (is (= {:events []
+          :done? true
+          :error? true}
+         (nrepl/msg-effects {"status" ["eval-error" "done"]}))))
+
+(deftest msg-effects-ex
+  ;; lg's nREPL server signals errors via "ex" without an eval-error status
+  (is (= {:events []
+          :done? false
+          :error? true}
+         (nrepl/msg-effects {"ex" "clojure.lang.ExceptionInfo"}))))
+
+(deftest msg-effects-value-and-done
+  (is (= {:events [[:value "42"]]
+          :done? true
+          :error? false}
+         (nrepl/msg-effects {"value" "42"
+                             "status" ["done"]}))))
