@@ -65,38 +65,56 @@ nreplctl is built to be scripted and driven by agents.
 | `1` | code threw, or eval timed out | the server's `err` output / `Eval timed out after 30s` |
 | `2` | couldn't resolve the port, connect, or complete the protocol | `No .nrepl-port file found and no --port given — is an nREPL server running here?` · `Could not connect to nREPL at 127.0.0.1:2137 — is the server still running?` |
 
-## Install
+## Installation
 
-> **Prerequisite — a patched lg (temporary).** nreplctl needs let-go's `net`
-> and `bencode` namespaces, which are not yet in a released `lg`. Until a
-> release ships, build lg from the
-> [`tcp-client`](https://github.com/abogoyavlensky/let-go/tree/tcp-client)
-> branch and point lgx at it via `LGX_LG` **before** building or running —
-> otherwise `lgx build`/`lgx run` fail with unresolved `net/dial`/`bencode`
-> symbols against the pinned `lg 1.11.1`:
+> Pre-built binaries and the Homebrew formula are published from the **first
+> release**, which is pending an upstream `let-go` release that ships the
+> `net`/`bencode` namespaces. Until then, build from source (below).
+
+### With [Homebrew](https://brew.sh) (macOS and Linux)
+
+```sh
+brew install abogoyavlensky/tap/nreplctl
+```
+
+### With [mise](https://mise.jdx.dev)
+
+```sh
+mise use -g github:abogoyavlensky/nreplctl@latest
+```
+
+### Manual
+
+Download the archive for your platform from the
+[releases page](https://github.com/abogoyavlensky/nreplctl/releases), extract it,
+and put `nreplctl` on your `PATH`:
+
+```sh
+VERSION=0.1.0
+OS=$(uname -s | tr '[:upper:]' '[:lower:]')       # linux | darwin
+ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+curl -sSL -o nreplctl.tar.gz \
+  "https://github.com/abogoyavlensky/nreplctl/releases/download/v${VERSION}/nreplctl_${VERSION}_${OS}_${ARCH}.tar.gz"
+tar -xzf nreplctl.tar.gz && mv nreplctl ~/.local/bin/
+```
+
+### From source (development)
+
+> nreplctl needs let-go's `net` and `bencode` namespaces, not yet in a released
+> `lg`. Build lg from the
+> [`tcp-client`](https://github.com/abogoyavlensky/let-go/tree/tcp-client) branch
+> and point lgx at it via `LGX_LG` before building or running:
 >
 > ```bash
 > git clone -b tcp-client https://github.com/abogoyavlensky/let-go /tmp/let-go
 > (cd /tmp/let-go && go build -o lg .)
 > export LGX_LG=/tmp/let-go/lg
 > ```
->
-> `.mise.toml` still pins `lg 1.11.1`; once a release ships `net`/`bencode`,
-> bump it, drop this note, and remove the "Build patched lg" step from CI.
-
-Install dependencies with [mise](https://mise.jdx.dev/getting-started.html) (or
-consult `.mise.toml`):
 
 ```bash
 mise trust && mise install
-```
-
-Build a binary (with `LGX_LG` exported as above):
-
-```bash
 lgx build
 bin/nreplctl --help
-bin/nreplctl eval '(+ 1 1)'
 ```
 
 ## Development

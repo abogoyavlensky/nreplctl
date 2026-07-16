@@ -1,5 +1,6 @@
 {:paths ["src"]
  :main "main.lg"
+ :resource-paths ["resources"]
  :targets {:bin {:out "bin/nreplctl"}}
  :deps {tiny-cli {:git/url "https://github.com/abogoyavlensky/tiny-cli"
                   :git/tag "v0.2.3"}}
@@ -15,4 +16,9 @@
          check {:doc "Run all checks"
                 :do [{:sh "lgx fmt check"}
                      {:sh "lgx lint"}
-                     {:sh "lgx test"}]}}}                    
+                     {:sh "lgx test"}]}
+
+         release {:doc "Release a new version"
+                  :extra-paths ["scripts"]
+                  :do [{:run "scripts/tag.lg"}
+                       {:sh "git push --tags"}]}}}                    

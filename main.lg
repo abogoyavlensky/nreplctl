@@ -1,6 +1,12 @@
 (ns nreplctl.main
-  (:require [nreplctl.core :as c]
+  (:require [io :as io]
+            [nreplctl.core :as c]
             [tiny-cli.core :as cli]))
+
+(defn- version
+  "Single source of truth for the version: the bundled resources/VERSION."
+  []
+  (io/slurp (io/resource "VERSION")))
 
 (defn- positive-int-str?
   "True when s parses to a positive integer. Options arrive as strings
@@ -11,7 +17,7 @@
 
 (def app
   {:name "nreplctl"
-   :version "0.1.0"
+   :version (version)
    :doc "Evaluate Clojure code in a running nREPL server and print the results."
    :commands [{:name "eval"
                :doc "Evaluate code in a running nREPL server and print the results."
