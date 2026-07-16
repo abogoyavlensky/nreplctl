@@ -16,8 +16,9 @@ nreplctl eval '<code>' [-p/--port N] [--port-file PATH] [--host HOST] [-t/--time
 ```
 
 ```bash
-nreplctl eval '(+ 1 1)'                              # → 2
-nreplctl eval --port 2137 '(println "hi")'          # → hi
+nreplctl eval '(+ 1 1)'                     # → 2
+nreplctl eval --port 2137 '(println "hi")'  # → hi   (streamed out)
+                                            #   nil  (the value of println)
 nreplctl eval '(require (quote [clojure.string :as s])) (s/join ", " ["a" "b" "c"])'
 ```
 
@@ -66,36 +67,13 @@ nreplctl is built to be scripted and driven by agents.
 
 ## Install
 
-Install dependencies with [mise](https://mise.jdx.dev/getting-started.html) (or
-consult `.mise.toml`):
-
-```bash
-mise trust && mise install
-```
-
-Build a binary:
-
-```bash
-lgx build
-bin/nreplctl --help
-bin/nreplctl eval '(+ 1 1)'
-```
-
-## Development
-
-```bash
-lgx run -- eval '(+ 1 1)'   # run from source
-lgx test                    # run the test suite
-lgx fmt                     # format
-lgx lint                    # lint (clj-kondo)
-lgx check                   # fmt check + lint + test
-```
-
-> **Temporary — building lg from source.** nreplctl needs let-go's `net` and
-> `bencode` namespaces, which are not yet in a released `lg`. Until a release
-> ships, build lg from the
+> **Prerequisite — a patched lg (temporary).** nreplctl needs let-go's `net`
+> and `bencode` namespaces, which are not yet in a released `lg`. Until a
+> release ships, build lg from the
 > [`tcp-client`](https://github.com/abogoyavlensky/let-go/tree/tcp-client)
-> branch and point lgx at it via `LGX_LG`:
+> branch and point lgx at it via `LGX_LG` **before** building or running —
+> otherwise `lgx build`/`lgx run` fail with unresolved `net/dial`/`bencode`
+> symbols against the pinned `lg 1.11.1`:
 >
 > ```bash
 > git clone -b tcp-client https://github.com/abogoyavlensky/let-go /tmp/let-go
@@ -105,3 +83,30 @@ lgx check                   # fmt check + lint + test
 >
 > `.mise.toml` still pins `lg 1.11.1`; once a release ships `net`/`bencode`,
 > bump it, drop this note, and remove the "Build patched lg" step from CI.
+
+Install dependencies with [mise](https://mise.jdx.dev/getting-started.html) (or
+consult `.mise.toml`):
+
+```bash
+mise trust && mise install
+```
+
+Build a binary (with `LGX_LG` exported as above):
+
+```bash
+lgx build
+bin/nreplctl --help
+bin/nreplctl eval '(+ 1 1)'
+```
+
+## Development
+
+Run these with `LGX_LG` exported (see the prerequisite above):
+
+```bash
+lgx run -- eval '(+ 1 1)'   # run from source
+lgx test                    # run the test suite
+lgx fmt                     # format
+lgx lint                    # lint (clj-kondo)
+lgx check                   # fmt check + lint + test
+```
